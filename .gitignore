@@ -1,0 +1,34 @@
+# Laravel
+**/vendor/
+**/node_modules/
+**/.env
+**/.env.backup
+**/.phpunit.result.cache
+**/Homestead.json
+**/Homestead.yaml
+**/npm-debug.log
+**/yarn-error.log
+**/.idea
+**/.vscode
+**/.DS_Store
+**/database/database.sqlite
+
+# Docker
+**/docker-compose.override.yml
+
+# Database
+**/storage/*.key
+**/storage/logs/*.log
+**/storage/framework/cache/**
+**/storage/framework/sessions/**
+**/storage/framework/views/**
+**/bootstrap/cache/*.php
+
+# Keep important directories
+!**/storage/app/.gitignore
+!**/storage/framework/.gitignore
+!**/storage/logs/.gitignore
+
+# AWS
+**/.aws-sam/
+**/samconfig.toml

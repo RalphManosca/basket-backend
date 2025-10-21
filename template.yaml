@@ -1,0 +1,338 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Cinch E-commerce Microservices Infrastructure
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for SSH access
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: RDS MySQL master password
+    MinLength: 8
+
+  EnvironmentType:
+    Type: String
+    Default: production
+    AllowedValues:
+      - production
+      - staging
+    Description: Environment type
+
+Resources:
+  # VPC and Networking
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: cinch-vpc
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: cinch-public-subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: cinch-public-subnet-2
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: cinch-private-subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: cinch-private-subnet-2
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: cinch-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: cinch-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Groups
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP and SSH
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: cinch-web-sg
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MySQL from web servers
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WebSecurityGroup
+      Tags:
+        - Key: Name
+          Value: cinch-db-sg
+
+  # RDS MySQL Database
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: cinch-db-subnet-group
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: cinch-mysql
+      Engine: mysql
+      EngineVersion: 8.0.35
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp2
+      MasterUsername: admin
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+      MultiAZ: false
+      Tags:
+        - Key: Name
+          Value: cinch-rds
+
+  # EC2 Instances for Services
+  CatalogEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0c55b159cbfafe1f0  # Amazon Linux 2 (update based on region)
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !Ref WebSecurityGroup
+      SubnetId: !Ref PublicSubnet1
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: cinch-catalog-service
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+
+          # Install Docker
+          amazon-linux-extras install docker -y
+          service docker start
+          usermod -a -G docker ec2-user
+
+          # Install Docker Compose
+          curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+
+          # Clone repository (replace with your GitHub repo)
+          # git clone https://github.com/yourusername/cinch-backend.git /app
+
+          # For now, create placeholder
+          mkdir -p /app
+          cd /app
+
+          # Set environment variables
+          export DB_HOST=${RDSInstance.Endpoint.Address}
+          export DB_PASSWORD=${DBPassword}
+
+          # Note: In production, you would pull your Docker image and run it
+          # docker pull your-registry/catalog-service:latest
+          # docker run -d -p 80:80 -e DB_HOST=$DB_HOST your-registry/catalog-service
+
+  CheckoutEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0c55b159cbfafe1f0  # Amazon Linux 2 (update based on region)
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !Ref WebSecurityGroup
+      SubnetId: !Ref PublicSubnet1
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: cinch-checkout-service
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          amazon-linux-extras install docker -y
+          service docker start
+          usermod -a -G docker ec2-user
+          curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          mkdir -p /app
+          export DB_HOST=${RDSInstance.Endpoint.Address}
+          export DB_PASSWORD=${DBPassword}
+          export EMAIL_SERVICE_URL=http://${EmailEC2.PublicIp}
+
+  EmailEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0c55b159cbfafe1f0  # Amazon Linux 2 (update based on region)
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !Ref WebSecurityGroup
+      SubnetId: !Ref PublicSubnet1
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: cinch-email-service
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          amazon-linux-extras install docker -y
+          service docker start
+          usermod -a -G docker ec2-user
+          curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          mkdir -p /app
+          export DB_HOST=${RDSInstance.Endpoint.Address}
+          export DB_PASSWORD=${DBPassword}
+
+  # IAM Role for EC2 instances
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: SESEmailPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+Outputs:
+  CatalogServiceURL:
+    Description: Catalog Service Public URL
+    Value: !Sub 'http://${CatalogEC2.PublicDnsName}'
+
+  CheckoutServiceURL:
+    Description: Checkout Service Public URL
+    Value: !Sub 'http://${CheckoutEC2.PublicDnsName}'
+
+  EmailServiceURL:
+    Description: Email Service Public URL
+    Value: !Sub 'http://${EmailEC2.PublicDnsName}'
+
+  RDSEndpoint:
+    Description: RDS MySQL Endpoint
+    Value: !GetAtt RDSInstance.Endpoint.Address
+
+  DBPort:
+    Description: RDS MySQL Port
+    Value: !GetAtt RDSInstance.Endpoint.Port
+
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC

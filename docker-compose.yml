@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  # MySQL Database Service
+  mysql:
+    image: mysql:8.0
+    container_name: cinch-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: catalog_db
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./init-dbs.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - cinch-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-psecret"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Catalog Service (Port 8001)
+  catalog-service:
+    build:
+      context: ./catalog-service
+      dockerfile: Dockerfile
+    container_name: cinch-catalog-service
+    ports:
+      - "8001:80"
+    environment:
+      - APP_NAME=Catalog Service
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - DB_CONNECTION=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=catalog_db
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - cinch-network
+    volumes:
+      - ./catalog-service:/var/www/html
+    command: >
+      sh -c "
+        sleep 10 &&
+        php artisan migrate --force &&
+        php artisan db:seed --class=ProductSeeder --force &&
+        apache2-foreground
+      "
+
+  # Checkout Service (Port 8002)
+  checkout-service:
+    build:
+      context: ./checkout-service
+      dockerfile: Dockerfile
+    container_name: cinch-checkout-service
+    ports:
+      - "8002:80"
+    environment:
+      - APP_NAME=Checkout Service
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - DB_CONNECTION=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=checkout_db
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+      - EMAIL_SERVICE_URL=http://email-service
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - cinch-network
+    volumes:
+      - ./checkout-service:/var/www/html
+    command: >
+      sh -c "
+        sleep 10 &&
+        php artisan migrate:fresh --force &&
+        apache2-foreground
+      "
+
+  # Email Service (Port 8003)
+  email-service:
+    build:
+      context: ./email-service
+      dockerfile: Dockerfile
+    container_name: cinch-email-service
+    ports:
+      - "8003:80"
+    environment:
+      - APP_NAME=Email Service
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - DB_CONNECTION=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=email_db
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+      - MAIL_MAILER=smtp
+      - MAIL_HOST=mailhog
+      - MAIL_PORT=1025
+      - MAIL_USERNAME=null
+      - MAIL_PASSWORD=null
+      - MAIL_ENCRYPTION=null
+      - MAIL_FROM_ADDRESS=noreply@cinch.com
+      - MAIL_FROM_NAME=Cinch Store
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    networks:
+      - cinch-network
+    volumes:
+      - ./email-service:/var/www/html
+    command: >
+      sh -c "
+        sleep 10 &&
+        php artisan migrate --force &&
+        apache2-foreground
+      "
+
+  # MailHog for Email Testing
+  mailhog:
+    image: mailhog/mailhog
+    container_name: cinch-mailhog
+    ports:
+      - "1025:1025"  # SMTP server
+      - "8025:8025"  # Web UI
+    networks:
+      - cinch-network
+
+networks:
+  cinch-network:
+    driver: bridge
+
+volumes:
+  mysql-data:
