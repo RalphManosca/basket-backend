@@ -519,7 +519,3 @@ docker-compose logs email-service
 # Verify MAIL_HOST in .env
 docker exec -it cinch-email-service cat .env | grep MAIL_HOST
 ```
-
----
-
-Built for the Cinch coding assignment.
